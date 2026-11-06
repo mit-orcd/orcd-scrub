@@ -18,15 +18,3 @@ orcd-scrub:
     max-runtime: 4d
     check-after: 2d
     # on-too-slow: auto
-
-# The repo is private: put ONE of these in a protected pillar (not the host
-# file in git), targeted at the ZFS servers, e.g. pillar/secrets/orcd-scrub.sls
-#
-# orcd-scrub:
-#   https_token: github_pat_...   # fine-grained, read-only, this repo only
-#
-# orcd-scrub:
-#   deploy_key: |                 # read-only deploy key of mit-orcd/orcd-scrub
-#     -----BEGIN OPENSSH PRIVATE KEY-----
-#     ...
-#     -----END OPENSSH PRIVATE KEY-----

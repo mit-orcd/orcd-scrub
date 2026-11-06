@@ -80,16 +80,29 @@ Per-host logs: `deploy-logs/<host>.log`.
 
 ## Deploy with Salt
 
-Copy `salt/orcd-scrub/init.sls` to `engaging/role/orcd-scrub/init.sls` in the Salt file root, then on a node:
+The Salt master keeps a checkout of this repo in the file root. Nodes get the files through Salt, so they
+need no GitHub access or credentials; only the master pulls from GitHub. Set it up once on the master:
 
 ```bash
-salt-call state.apply engaging.role.orcd-scrub test=True    # what would change
-salt-call state.apply engaging.role.orcd-scrub
+cd <file_root>/engaging/role/orcd-scrub
+git clone https://github.com/mit-orcd/orcd-scrub.git src
+ln -s src/salt/orcd-scrub/init.sls init.sls        # the state comes from the repo too
 ```
 
-The state clones or updates [mit-orcd/orcd-scrub](https://github.com/mit-orcd/orcd-scrub) (pillar
-`orcd-scrub:rev`, default `main`) into `/opt/orcd-scrub` and runs `install.sh` from that checkout.
-`install.sh` runs only when `install.sh --check` finds something missing: the binary or units differ from
+If the file root is itself a git repo, add `engaging/role/orcd-scrub/src/` to its `.gitignore`.
+
+To roll out a new version, pull on the master, then apply:
+
+```bash
+git -C <file_root>/engaging/role/orcd-scrub/src pull
+salt-call state.apply engaging.role.orcd-scrub test=True    # on a node: what would change
+salt-call state.apply engaging.role.orcd-scrub
+salt '<target>' state.apply engaging.role.orcd-scrub        # or from the master
+```
+
+Nodes get exactly the commit that is checked out on the master, so nothing changes until you pull.
+The state copies the checkout (without `.git`) to `/opt/orcd-scrub`, root-only, and runs `install.sh` from
+there. `install.sh` runs only when `install.sh --check` finds something missing: the binary or units differ from
 the checkout, a pool has no state, or a pool's timer is not enabled. Re-applying is therefore a no-op until
 the repo changes, and a change is the in-place upgrade described below, which keeps every pool's run window.
 The timers are systemd-enabled, so they come back after a reboot; a highstate also restores anything
@@ -109,11 +122,6 @@ orcd-scrub:
 `settings` are applied with `--no-reset`, so the next start date stays as it is, and a running scrub
 keeps running. Run `orcd-scrub reattach <pool>` to apply them to that scrub. The state never passes
 `--reinit`, `--force-config` or `--purge`.
-
-The repo is private, so each node needs read access. Set one of these in a protected pillar, not in the
-host file in git: `orcd-scrub:https_token` (a fine-grained read-only token) or `orcd-scrub:deploy_key`
-(the private half of a read-only deploy key; the GitHub host key is pinned by the state). The checkout is
-mode 0700 because `git.latest` can store the token in `.git/config`.
 
 ## Upgrade (keeps the run window)
 
