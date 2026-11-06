@@ -14,6 +14,10 @@
 #   --keep-stock            do NOT disable the stock zfs-scrub-*@pool timers / cron
 #   --force-config          overwrite /etc/orcd-scrub.conf (old one saved as .bak)
 #   --dry-run               print what would be done
+#   --check                 change nothing; exit 0 if this node is already installed
+#                           from this source with every pool initialised and its
+#                           timer enabled, else list what is missing and exit 1
+#                           (used as the Salt `unless:` guard)
 #   --uninstall [--purge]   remove units/binary (purge also removes state + config)
 #
 # Upgrade: re-running install.sh (or deploy.sh) on a node that already has
@@ -31,7 +35,7 @@ UNIT_DIR=/etc/systemd/system
 STATE_DIR=/var/lib/orcd-scrub
 
 POOLS=""; POOL_REGEX='^data[0-9]+$'; BASELINE=""; START_NOW=0; REINIT=0
-KEEP_STOCK=0; FORCE_CONFIG=0; DRY=0; UNINSTALL=0; PURGE=0; FAILED=()
+KEEP_STOCK=0; FORCE_CONFIG=0; DRY=0; CHECK=0; UNINSTALL=0; PURGE=0; FAILED=()
 
 while (( $# )); do
     case $1 in
@@ -43,6 +47,7 @@ while (( $# )); do
         --keep-stock) KEEP_STOCK=1; shift ;;
         --force-config) FORCE_CONFIG=1; shift ;;
         --dry-run) DRY=1; shift ;;
+        --check) CHECK=1; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
         --purge) PURGE=1; shift ;;
         -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -85,6 +90,32 @@ if (( UNINSTALL )); then
     exit 0
 fi
 
+# ------------------------------------------------------------------- check
+if (( CHECK )); then
+    need=()
+    cmp -s "$SRC_DIR/orcd-scrub.sh" "$BIN" || need+=("$BIN differs from source")
+    for u in orcd-scrub@.service orcd-scrub@.timer; do
+        cmp -s "$SRC_DIR/systemd/$u" "$UNIT_DIR/$u" || need+=("$u differs from source")
+    done
+    [[ -e $CONF ]] || need+=("$CONF missing")
+    # shellcheck source=/dev/null
+    [[ -r $CONF ]] && . "$CONF"
+    for p in $(detect_pools); do
+        [[ -r $STATE_DIR/$p.state ]] || need+=("$p not initialised")
+        systemctl is-enabled -q "orcd-scrub@$p.timer" 2>/dev/null || need+=("orcd-scrub@$p.timer not enabled")
+        systemctl is-active -q "orcd-scrub@$p.timer" 2>/dev/null || need+=("orcd-scrub@$p.timer not active")
+        if (( ! KEEP_STOCK )); then
+            for u in $(stock_units "$p"); do
+                systemctl is-enabled -q "$u" 2>/dev/null && need+=("stock $u enabled")
+            done
+        fi
+    done
+    if (( ${#need[@]} )); then
+        say "install needed: $(IFS=';'; echo "${need[*]}")"; exit 1
+    fi
+    say "up to date ($("$BIN" --version))"; exit 0
+fi
+
 # ----------------------------------------------------------------- install
 for f in orcd-scrub.sh install.sh; do
     if ! err=$(bash -n "$SRC_DIR/$f" 2>&1); then
@@ -112,7 +143,7 @@ window_sig() {  # the fields that define a pool's run window
 }
 NEW_VER=$(sed -nE 's/^VERSION=(.*)/\1/p' "$SRC_DIR/orcd-scrub.sh")
 OLD_VER=""; [[ -x $BIN ]] && OLD_VER=$("$BIN" --version 2>/dev/null | awk '{print $2}')
-OLD_VER=${OLD_VER:-$([[ -e $BIN ]] && echo unknown)}
+if [[ -z $OLD_VER && -e $BIN ]]; then OLD_VER=unknown; fi
 declare -A SIG_BEFORE=()
 HAVE_STATE=0
 for p in "${PL[@]}"; do

@@ -56,13 +56,15 @@
 #        window limit, cycle month, any paused/orphaned scrub of ours is cancelled
 #        - so a fresh run is due immediately (same day). Watermark is kept.
 #        --start  also start orcd-scrub@POOL.service right away.
+#        --check  change nothing; exit 0 if all values are already in effect,
+#                 else print the differences and exit 1 (for Salt `unless:`).
 #
 # Config: /etc/orcd-scrub.conf (shell variables, see defaults below)
 # State : /var/lib/orcd-scrub/<pool>.state, history in <pool>.history
 set -uo pipefail
 
 PROG=orcd-scrub
-VERSION=1.3.0
+VERSION=1.3.1
 
 # ----------------------------------------------------------------- defaults
 CONF_FILE=${ORCD_SCRUB_CONF:-/etc/orcd-scrub.conf}
@@ -951,12 +953,13 @@ reset_run_info() {
 }
 
 cmd_set() {
-    local reset=1 start=0 pools=() k v key secs timing=0 changed=()
+    local reset=1 start=0 check=0 pools=() k v key secs timing=0 changed=()
     local new_max=$MAX_RUNTIME new_chk=$CHECK_AFTER
     declare -A NEW=()
     while (( $# )); do
         case $1 in
             --no-reset) reset=0; shift ;;
+            --check) check=1; shift ;;
             --start) start=1; shift ;;
             --pool) pools+=("$2"); shift 2 ;;
             *=*) k=${1%%=*}; v=${1#*=}; shift; set -- "$k" "$v" "$@" ;;
@@ -992,6 +995,12 @@ cmd_set() {
     (( new_chk >= 600 && new_chk < new_max ))    || die "check-after ($(hdur "$new_chk")) must be >= 10m and < max-runtime ($(hdur "$new_max"))"
     if [[ -n ${NEW[MIN_WINDOW]:-}${NEW[OVERLAP]:-} ]]; then
         (( ${NEW[MIN_WINDOW]:-$MIN_WINDOW} > ${NEW[OVERLAP]:-$OVERLAP} )) || die "min-window must be larger than overlap"
+    fi
+    if (( check )); then
+        local diff=()
+        for k in "${!NEW[@]}"; do [[ ${!k} == "${NEW[$k]}" ]] || diff+=("$k=${!k}->${NEW[$k]}"); done
+        (( ${#diff[@]} == 0 )) && return 0
+        echo "differs: ${diff[*]}"; return 1
     fi
     [[ ${DRY_RUN:-0} == 1 ]] && { for k in "${!NEW[@]}"; do echo "would set $k=${NEW[$k]}"; done; return 0; }
 

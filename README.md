@@ -46,6 +46,8 @@ exits immediately otherwise.
 | `systemd/orcd-scrub@.service`, `systemd/orcd-scrub@.timer` | `/etc/systemd/system/` |
 | `install.sh` | per-node installer |
 | `deploy.sh` | multi-node ssh deployer |
+| `salt/orcd-scrub/init.sls` | Salt state `engaging.role.orcd-scrub` (copy to `engaging/role/orcd-scrub/`) |
+| `salt/pillar.example.sls` | host pillar example |
 | `tests/` | mock `zpool` + fake-clock simulator |
 
 ## Install on one node
@@ -75,6 +77,43 @@ The installer disables the stock `zfs-scrub-{weekly,monthly}@<pool>.timer` units
 
 Uses `ssh -o BatchMode=yes` and `sudo -n` (unless `-u root`). Hosts without matching pools are skipped.
 Per-host logs: `deploy-logs/<host>.log`.
+
+## Deploy with Salt
+
+Copy `salt/orcd-scrub/init.sls` to `engaging/role/orcd-scrub/init.sls` in the Salt file root, then on a node:
+
+```bash
+salt-call state.apply engaging.role.orcd-scrub test=True    # what would change
+salt-call state.apply engaging.role.orcd-scrub
+```
+
+The state clones or updates [mit-orcd/orcd-scrub](https://github.com/mit-orcd/orcd-scrub) (pillar
+`orcd-scrub:rev`, default `main`) into `/opt/orcd-scrub` and runs `install.sh` from that checkout.
+`install.sh` runs only when `install.sh --check` finds something missing: the binary or units differ from
+the checkout, a pool has no state, or a pool's timer is not enabled. Re-applying is therefore a no-op until
+the repo changes, and a change is the in-place upgrade described below, which keeps every pool's run window.
+The timers are systemd-enabled, so they come back after a reboot; a highstate also restores anything
+that went missing. Nodes without `zpool` are skipped.
+
+Pillar (host file, see `salt/pillar.example.sls`): add `orcd-scrub` to `role:`, plus an optional block:
+
+```yaml
+orcd-scrub:
+  pools: "data1 data2"        # default: auto-detect ^data[0-9]+$
+  baseline: "2026-07-31"      # only for pools without state
+  settings:                   # orcd-scrub set --no-reset ..., only when different
+    max-runtime: 4d
+    check-after: 2d
+```
+
+`settings` are applied with `--no-reset`, so the next start date stays as it is, and a running scrub
+keeps running. Run `orcd-scrub reattach <pool>` to apply them to that scrub. The state never passes
+`--reinit`, `--force-config` or `--purge`.
+
+The repo is private, so each node needs read access. Set one of these in a protected pillar, not in the
+host file in git: `orcd-scrub:https_token` (a fine-grained read-only token) or `orcd-scrub:deploy_key`
+(the private half of a read-only deploy key; the GitHub host key is pinned by the state). The checkout is
+mode 0700 because `git.latest` can store the token in `.git/config`.
 
 ## Upgrade (keeps the run window)
 
