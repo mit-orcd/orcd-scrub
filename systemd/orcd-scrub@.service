@@ -1,0 +1,16 @@
+[Unit]
+Description=ORCD rolling-window ZFS scrub of pool %i
+Documentation=man:zpool-scrub(8)
+After=zfs.target zfs-import.target zfs-mount.service
+ConditionPathIsDirectory=/sys/module/zfs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/orcd-scrub run %i
+# MAX_RUNTIME (24h) + slack; the script enforces the real limit.
+# `orcd-scrub set max-runtime ...` writes orcd-scrub@.service.d/10-timeout.conf
+TimeoutStartSec=25h
+# On stop/reboot the script pauses the scrub (resumed on next catch-up run)
+KillMode=mixed
+TimeoutStopSec=90
+Nice=10

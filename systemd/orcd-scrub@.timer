@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily check for ORCD rolling-window ZFS scrub of pool %i
+
+[Timer]
+# Fires daily; the script decides whether a monthly cycle or a weekly
+# catch-up is actually due, and exits immediately otherwise.
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

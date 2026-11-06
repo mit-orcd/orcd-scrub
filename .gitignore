@@ -1,0 +1,4 @@
+deploy-logs/
+*.swp
+.DS_Store
+__pycache__/

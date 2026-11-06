@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+# Mock zpool for tests. Pools: $MOCK_POOLS (default "data1"); per-pool state in
+# $MOCK_ZPOOL_STATE (data1) / $MOCK_ZPOOL_STATE.<pool>; clock in $ORCD_TEST_CLOCK.
+import sys, json, os, time, datetime as dt
+POOLS=os.environ.get('MOCK_POOLS','data1').split()
+CLK=os.environ['ORCD_TEST_CLOCK']
+RATE=float(os.environ.get('MOCK_SEC_PER_DAY','1200'))  # scrub seconds per day of window
+SCALE=float(os.environ.get('MOCK_PCT_SCALE','1'))      # <1: % done/ETA relative to whole pool, not window
+# -S/-E dates before the pool's date->txg history (MOCK_FEATURE_SINCE) map to
+# pool creation (MOCK_POOL_CREATED) / to the feature date, as in zpool-scrub(8)
+def _d(v): return dt.datetime.strptime(v,'%Y-%m-%d').timestamp() if v else None
+FEAT=_d(os.environ.get('MOCK_FEATURE_SINCE','')); CREATED=_d(os.environ.get('MOCK_POOL_CREATED','2026-01-01'))
+now=int(open(CLK).read())
+a=sys.argv[1:]
+pool=a[-1] if len(a)>1 and not a[-1].startswith('-') else 'data1'
+ST=os.environ['MOCK_ZPOOL_STATE'] + ('' if pool=='data1' else '.'+pool)
+s=json.load(open(ST)) if os.path.exists(ST) else {'state':'finished','end':int(dt.datetime(2026,9,1,6).timestamp()),'errors':0,'log':[]}
+def save(): json.dump(s,open(ST,'w'))
+def prog():
+    if s['state']=='scrubbing': return s['acc']+(now-s['since'])
+    return s.get('acc',0)
+def ts(e): return time.strftime('%a %b %d %H:%M:%S %Y', time.localtime(e))
+def tick():
+    if s['state']=='scrubbing' and prog()>=s['need']:
+        s['state']='finished'; s['end']=s['since']+(s['need']-s['acc']); save()
+if a[0]=='list':
+    if len(a)>1 and not a[-1].startswith('-') and a[-1] not in ('name',):
+        sys.exit(0 if a[-1] in POOLS else 1)
+    print('\n'.join(POOLS)); sys.exit(0)
+if a[0]=='version': print('zfs-2.4.4-1\nzfs-kmod-2.4.4-1'); sys.exit(0)
+if a[0]=='scrub':
+    a=a[1:]
+    if a and a[-1] not in POOLS: print(f"cannot open '{a[-1]}': no such pool",file=sys.stderr); sys.exit(1)
+    if not a: print("usage:\n\tscrub [-w] [-t] [-C | [-S date] [-E date]] <pool>",file=sys.stderr); sys.exit(2)
+    tick()
+    if a[0]=='-s': s['state']='canceled'; s['end']=now; s['log'].append(('stop',now)); save(); sys.exit(0)
+    if a[0]=='-p': s['acc']=prog(); s['state']='paused'; s['log'].append(('pause',now)); save(); sys.exit(0)
+    if a[0]=='-S':
+        S=dt.datetime.strptime(a[1],'%Y-%m-%d %H:%M').timestamp(); E=dt.datetime.strptime(a[3],'%Y-%m-%d %H:%M').timestamp()
+        if FEAT and S < FEAT: S=CREATED
+        if FEAT and E < FEAT: E=FEAT
+        s.update(state='scrubbing',since=now,acc=0,need=int((E-S)/86400*RATE),start=now,errors=0)
+        s['log'].append(('start',now,a[1],a[3])); save(); sys.exit(0)
+    if s['state']=='paused': s.update(state='scrubbing',since=now); s['log'].append(('resume',now)); save(); sys.exit(0)
+    sys.exit(1)
+if a[0]=='status':
+    tick()
+    print(f"  pool: {pool}\n state: ONLINE")
+    st=s['state']
+    if st=='scrubbing':
+        p=prog(); pct=100*p/s['need']*SCALE; rem=int(s['need']/SCALE)-p
+        d,r=divmod(rem,86400); h,r=divmod(r,3600); m,sec=divmod(r,60)
+        eta=(f"{d} days " if d else "")+f"{h:02d}:{m:02d}:{sec:02d}"
+        print(f"  scan: scrub in progress since {ts(s['start'])}\n\t1T scanned at 1G/s, 1T issued at 1G/s, 9T total\n\t0B repaired, {pct:.2f}% done, {eta} to go")
+    elif st=='paused': print(f"  scan: scrub paused since {ts(now)}\n\tscrub started on {ts(s['start'])}\n\t0B repaired, {100*prog()/s['need']:.2f}% done")
+    elif st=='canceled': print(f"  scan: scrub canceled on {ts(s['end'])}")
+    else: print(f"  scan: scrub repaired 0B in 01:00:00 with {s.get('errors',0)} errors on {ts(s['end'])}")
+    print("config:\n\n\tNAME STATE")

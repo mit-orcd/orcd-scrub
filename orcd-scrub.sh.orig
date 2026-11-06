@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+POOL="$1"
+STATE_DIR="/var/lib/zfs"
+ACTIVE_STATE_FILE="$STATE_DIR/last_scrub_timestamp"
+BUCKET_STATE_FILE="$STATE_DIR/cold_bucket_index"
+
+mkdir -p "$STATE_DIR"
+
+# Fallback initial baseline if first run
+DEFAULT_BASELINE="2026-09-01 00:00:00"
+
+if [[ -f "$ACTIVE_STATE_FILE" ]]; then
+    START_DATE=$(cat "$ACTIVE_STATE_FILE")
+else
+    START_DATE="$DEFAULT_BASELINE"
+fi
+
+# Current run cutoff (freeze timestamp now)
+END_DATE=$(date "+%Y-%m-%d %H:%M:%S")
+
+wait_for_scrub() {
+    while zpool status "$POOL" | grep -q "scrub in progress"; do
+        sleep 60
+    done
+}
+
+echo "=== Phase 1: Rolling Active Window ($START_DATE to $END_DATE) ==="
+zpool scrub -S "$START_DATE" -E "$END_DATE" "$POOL"
+wait_for_scrub
+
+# Verify scrub succeeded without errors before recording new watermark
+if zpool status "$POOL" | grep -q "scan: scrub repaired 0B.*with 0 errors"; then
+    echo "$END_DATE" > "$ACTIVE_STATE_FILE"
+    echo "Watermark advanced to: $END_DATE"
+fi
+
+# === Phase 2: Rotating Cold Archive ===
+# (Execute cold slice -S / -E logic here, then advance cold bucket index)
